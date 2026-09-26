@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>门诊处方数据报送台</title>
+<style>
+  :root {
+    --blue:#1f6fb2; --blue-d:#155a93; --bg:#f4f7fa; --line:#dce4ec;
+    --green:#1a8a4c; --green-bg:#e7f6ee; --red:#c0392b; --red-bg:#fdecea;
+    --amber:#b9770e; --amber-bg:#fef6e0; --gray:#6b7a8a; --gray-bg:#eef2f6;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif;
+         background:var(--bg); color:#23303c; }
+  header { background:linear-gradient(120deg,var(--blue),var(--blue-d)); color:#fff;
+           padding:14px 24px; display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:19px; margin:0; font-weight:600; }
+  header .sub { font-size:12px; opacity:.85; }
+  .wrap { max-width:1280px; margin:18px auto; padding:0 18px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:8px;
+          padding:16px 18px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin:0 0 12px; color:var(--blue-d);
+             border-left:3px solid var(--blue); padding-left:8px; }
+  .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  button { border:0; border-radius:5px; padding:8px 16px; font-size:13px;
+           cursor:pointer; background:var(--blue); color:#fff; }
+  button:hover:not(:disabled) { background:var(--blue-d); }
+  button:disabled { background:#b6c4d0; cursor:not-allowed; }
+  button.gray { background:#7f8c9b; } button.gray:hover:not(:disabled){background:#64727f;}
+  button.red { background:var(--red); } button.red:hover:not(:disabled){background:#a02d21;}
+  button.outline { background:#fff; color:var(--blue); border:1px solid var(--blue); }
+  button.sm { padding:4px 10px; font-size:12px; }
+  input[type=file] { font-size:13px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { border:1px solid var(--line); padding:7px 9px; text-align:left; }
+  th { background:#eef4f9; font-weight:600; white-space:nowrap; }
+  tr.clickable { cursor:pointer; } tr.clickable:hover { background:#f0f6fb; }
+  .badge { display:inline-block; padding:2px 9px; border-radius:10px; font-size:12px; white-space:nowrap;}
+  .st-pending   { background:var(--gray-bg); color:var(--gray); }
+  .st-processing{ background:var(--amber-bg); color:var(--amber); }
+  .st-success   { background:var(--green-bg); color:var(--green); }
+  .st-failed    { background:var(--red-bg); color:var(--red); }
+  .st-invalid   { background:#f3e8fd; color:#7d3c98; }
+  .st-completed { background:var(--green-bg); color:var(--green); }
+  .st-completed_with_errors { background:var(--amber-bg); color:var(--amber); }
+  .muted { color:var(--gray); font-size:12px; }
+  .toast { position:fixed; right:20px; bottom:20px; max-width:420px; z-index:99;
+           display:flex; flex-direction:column; gap:8px; }
+  .toast div { padding:10px 14px; border-radius:6px; font-size:13px; color:#fff;
+               box-shadow:0 2px 10px rgba(0,0,0,.18); }
+  .toast .ok { background:var(--green); } .toast .err{ background:var(--red);}
+  .toast .info{ background:var(--blue); } .toast .warn{ background:var(--amber);}
+  .summary { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:10px; font-size:13px;}
+  .summary b { font-size:15px; }
+  .err-cell { color:var(--red); font-size:12px; }
+  .mono { font-family:Consolas,monospace; }
+  details { margin-top:10px; }
+  summary { cursor:pointer; font-size:13px; color:var(--blue); }
+  #detailView td.mono { white-space:nowrap; }
+  .wide { overflow-x:auto; }
+  label.chk { font-size:12px; color:var(--gray); display:flex; align-items:center; gap:4px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>门诊处方数据报送台</h1>
+  <span class="sub">导入 → 分批提交监管接口 → 逐行回写结果 → 仅重送失败行（不整批重复报送）</span>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>1. 导入处方文件（CSV）</h2>
+    <div class="toolbar">
+      <input type="file" id="fileInput" accept=".csv,text/csv">
+      <button onclick="uploadFile()">导入并校验</button>
+      <button class="outline" onclick="downloadSample()">下载示例 CSV</button>
+      <span class="muted">必需列：处方号、患者编号、药品、数量、费用</span>
+      <span style="flex:1"></span>
+      <button class="gray sm" onclick="resetMock()" title="清空监管端模拟器的已受理记录（仅演示/测试）">重置监管端模拟器</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2. 批次列表</h2>
+    <div class="wide">
+    <table id="batchTable">
+      <thead><tr>
+        <th>ID</th><th>文件</th><th>总行数</th><th>待报送</th><th>已受理</th>
+        <th>失败</th><th>本地无效</th><th>批次状态</th><th>导入时间</th><th>操作</th>
+      </tr></thead>
+      <tbody><tr><td colspan="10" class="muted">加载中…</td></tr></tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card" id="detailCard" style="display:none">
+    <h2>3. 批次明细与报送</h2>
+    <div id="detailHead"></div>
+    <div class="toolbar" style="margin:10px 0">
+      <button id="btnSubmit" onclick="submitBatch(false,false)">提交待报送行</button>
+      <button class="red" id="btnRetry" onclick="retryFailed(false)">仅重送失败行</button>
+      <button class="outline" onclick="exportCsv()">导出报送结果 CSV</button>
+      <span style="flex:1"></span>
+      <label class="chk"><input type="checkbox" id="optFlaky"> 模拟瞬时故障（演示重试用）</label>
+      <label class="chk"><input type="checkbox" id="optOutage"> 模拟一次性宕机 503（演示片级失败）</label>
+    </div>
+    <div class="wide">
+    <table id="rowTable">
+      <thead><tr>
+        <th>行号</th><th>处方号</th><th>患者编号</th><th>药品</th><th>数量</th><th>费用</th>
+        <th>状态</th><th>错误代码</th><th>错误说明</th><th>监管受理号</th><th>尝试次数</th><th>末次结果时间</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+    <details>
+      <summary>查看审计日志（防重复留痕）</summary>
+      <div class="wide"><table id="auditTable">
+        <thead><tr><th>时间</th><th>事件</th><th>处方号</th><th>详情</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </details>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let currentBatch = null;
+
+function toast(msg, kind='info') {
+  const box = document.getElementById('toast');
+  const d = document.createElement('div');
+  d.className = kind; d.textContent = msg;
+  box.appendChild(d);
+  setTimeout(() => d.remove(), 6000);
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function badge(status, label) {
+  return `<span class="badge st-${esc(status)}">${esc(label)}</span>`;
+}
+
+async function api(url, opts) {
+  const resp = await fetch(url, opts);
+  let data = {};
+  try { data = await resp.json(); } catch(e) {}
+  return { ok: resp.ok, status: resp.status, data };
+}
+
+// ---------- 导入 ----------
+function downloadSample() {
+  location.href = '/static/samples/sample_prescriptions.csv';
+}
+
+async function uploadFile() {
+  const f = document.getElementById('fileInput').files[0];
+  if (!f) return toast('请先选择 CSV 文件', 'warn');
+  const buf = await f.arrayBuffer();
+  const r = await api('/api/batches', {
+    method: 'POST',
+    headers: {'Content-Type':'text/csv; charset=utf-8', 'X-Filename': encodeURIComponent(f.name)},
+    body: buf
+  });
+  if (!r.ok) return toast('导入失败：' + (r.data.error || r.status), 'err');
+  const d = r.data;
+  toast(`导入成功：共 ${d.total} 行，待报送 ${d.pending} 行，本地无效 ${d.invalid} 行`,
+        d.invalid ? 'warn' : 'ok');
+  if (d.invalid_rows && d.invalid_rows.length) {
+    const lines = d.invalid_rows.slice(0, 5)
+      .map(x => `第${x.row_no}行 ${x.rx_no ? '['+x.rx_no+'] ' : ''}${x.error_message}`).join('；');
+    toast('本地无效行：' + lines + (d.invalid_rows.length>5?' …':''), 'warn');
+  }
+  await loadBatches();
+  await openBatch(d.batch_id);
+}
+
+// ---------- 批次列表 ----------
+async function loadBatches() {
+  const r = await api('/api/batches');
+  const tb = document.querySelector('#batchTable tbody');
+  if (!r.ok || !r.data.batches.length) {
+    tb.innerHTML = '<tr><td colspan="10" class="muted">暂无批次，请先导入</td></tr>';
+    return;
+  }
+  tb.innerHTML = r.data.batches.map(b => `
+    <tr class="clickable" onclick="openBatch(${b.id})">
+      <td>${b.id}</td><td>${esc(b.filename)}</td><td>${b.total_rows}</td>
+      <td>${b.n_pending}</td><td style="color:var(--green)">${b.n_success}</td>
+      <td style="color:var(--red)">${b.n_failed}</td><td style="color:#7d3c98">${b.n_invalid}</td>
+      <td>${badge(b.status, b.status_label)}</td>
+      <td class="mono">${esc(b.created_at)}</td>
+      <td onclick="event.stopPropagation()"><button class="sm" onclick="openBatch(${b.id})">查看</button></td>
+    </tr>`).join('');
+}
+
+// ---------- 批次明细 ----------
+async function openBatch(id) {
+  const r = await api('/api/batches/' + id);
+  if (!r.ok) return toast('批次不存在', 'err');
+  currentBatch = r.data;
+  document.getElementById('detailCard').style.display = '';
+  renderDetail();
+  loadAudit(id);
+  document.getElementById('detailCard').scrollIntoView({behavior:'smooth'});
+}
+
+function renderDetail() {
+  const { batch, rows } = currentBatch;
+  const n = s => rows.filter(r => r.status === s).length;
+  document.getElementById('detailHead').innerHTML = `
+    <div class="summary">
+      <span>批次 <b>#${batch.id}</b>（${esc(batch.filename)}）</span>
+      <span>状态：${badge(batch.status, batch.status_label)}</span>
+      <span>待报送 <b>${n('pending')}</b></span>
+      <span style="color:var(--green)">已受理 <b>${n('success')}</b></span>
+      <span style="color:var(--red)">失败 <b>${n('failed')}</b></span>
+      <span style="color:#7d3c98">本地无效 <b>${n('invalid')}</b></span>
+      <span class="muted">导入 ${esc(batch.created_at)}${batch.submitted_at ? '　首次提交 '+esc(batch.submitted_at):''}</span>
+    </div>`;
+  document.querySelector('#rowTable tbody').innerHTML = rows.map(r => `
+    <tr>
+      <td>${r.row_no}</td>
+      <td class="mono">${esc(r.rx_no)}</td>
+      <td class="mono">${esc(r.patient_id)}</td>
+      <td>${esc(r.drug)}</td><td>${esc(r.quantity)}</td><td>${esc(r.fee)}</td>
+      <td>${badge(r.status, r.status_label)}</td>
+      <td class="err-cell mono">${esc(r.error_code)}</td>
+      <td class="err-cell">${esc(r.error_message)}</td>
+      <td class="mono">${esc(r.regulator_id)}</td>
+      <td>${r.attempts}</td>
+      <td class="mono">${esc(r.last_result_at)}</td>
+    </tr>`).join('');
+  document.getElementById('btnSubmit').disabled = n('pending') === 0;
+  document.getElementById('btnRetry').disabled = n('failed') === 0;
+}
+
+async function refreshCurrent() {
+  if (!currentBatch) return;
+  const r = await api('/api/batches/' + currentBatch.batch.id);
+  if (r.ok) { currentBatch = r.data; renderDetail(); loadAudit(currentBatch.batch.id); }
+  loadBatches();
+}
+
+// ---------- 提交 / 重送 ----------
+function opts() {
+  return {
+    force_flaky: document.getElementById('optFlaky').checked,
+    force_outage: document.getElementById('optOutage').checked
+  };
+}
+
+async function runAction(url, title) {
+  const body = opts();
+  toast(title + '…（逐行回写中，请勿重复点击）', 'info');
+  const r = await api(url, {method:'POST', headers:{'Content-Type':'application/json'},
+                            body: JSON.stringify(body)});
+  const d = r.data || {};
+  if (d.blocked) return toast('已拦截：' + (d.reason || '批次正在报送中'), 'warn');
+  if (!r.ok) return toast(title + '失败：' + (d.error || r.status), 'err');
+  if (!d.rows_sent) return toast(d.reason || '没有需要发送的行（成功行不会重复报送）', 'warn');
+  toast(`${title}完成：本次发送 ${d.rows_sent} 行，受理 ${d.success}，失败 ${d.failed}` +
+        (d.chunks_failed ? `，${d.chunks_failed} 个分片传输失败(可重送)` : ''),
+        d.failed ? 'warn' : 'ok');
+  await refreshCurrent();
+}
+
+function submitBatch() {
+  runAction(`/api/batches/${currentBatch.batch.id}/submit`, '提交待报送行');
+}
+function retryFailed() {
+  runAction(`/api/batches/${currentBatch.batch.id}/retry`, '重送失败行');
+}
+
+function exportCsv() {
+  if (currentBatch) location.href = `/api/batches/${currentBatch.batch.id}/export.csv`;
+}
+
+async function resetMock() {
+  const r = await api('/api/mock/reset', {method:'POST'});
+  toast(r.ok ? '监管端模拟器已重置（已受理记录清空，可重新演示）' : '重置失败', r.ok?'ok':'err');
+}
+
+async function loadAudit(id) {
+  const r = await api(`/api/batches/${id}/audit`);
+  const tb = document.querySelector('#auditTable tbody');
+  if (!r.ok) { tb.innerHTML = ''; return; }
+  const evMap = {import:'导入',submit:'提交',retry:'重送',success:'受理成功',failed:'行失败',
+                 invalid:'本地无效',blocked:'并发拦截',recover:'中断恢复'};
+  tb.innerHTML = r.data.log.map(a => `
+    <tr><td class="mono">${esc(a.created_at)}</td>
+        <td>${esc(evMap[a.event] || a.event)}</td>
+        <td class="mono">${esc(a.rx_no)}</td>
+        <td class="muted">${esc(a.detail)}</td></tr>`).join('');
+}
+
+loadBatches();
+</script>
+</body>
+</html>
