@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>门诊处方数据报送台</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: "PingFang SC","Microsoft YaHei",sans-serif; margin:0; background:#f4f6f9; color:#222; }
+  header { background:#1f4e79; color:#fff; padding:14px 24px; }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; font-size:12px; opacity:.8; }
+  main { padding:16px 24px 40px; max-width:1280px; margin:0 auto; }
+  .card { background:#fff; border-radius:8px; padding:16px; margin-bottom:16px;
+          box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .card h2 { margin:0 0 12px; font-size:15px; color:#1f4e79; }
+  button { border:0; border-radius:6px; padding:8px 14px; font-size:13px; cursor:pointer;
+           background:#1f4e79; color:#fff; }
+  button:disabled { background:#b6c2d2; cursor:not-allowed; }
+  button.ghost { background:#eef2f7; color:#1f4e79; border:1px solid #c8d4e2; }
+  button.danger { background:#b03a2e; }
+  textarea { width:100%; height:110px; font-family:monospace; font-size:12px;
+             border:1px solid #ccd; border-radius:6px; padding:8px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:7px 8px; border-bottom:1px solid #e8ecf1; text-align:left; white-space:nowrap; }
+  th { background:#f0f4f8; color:#445; position:sticky; top:0; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:10px; font-size:12px; color:#fff; }
+  .PENDING   { background:#8a94a6; }
+  .SUBMITTING{ background:#d68910; }
+  .SUCCESS   { background:#1e8449; }
+  .FAILED    { background:#b03a2e; }
+  .err { color:#b03a2e; font-size:12px; white-space:normal; max-width:260px; }
+  .ok-note { color:#1e8449; font-size:12px; }
+  .stats { display:flex; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+  .stat { flex:1; min-width:120px; border-radius:8px; padding:10px 14px; color:#fff; }
+  .stat b { font-size:22px; display:block; }
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  .msg { font-size:13px; margin-top:8px; }
+  .msg.ok { color:#1e8449; } .msg.bad { color:#b03a2e; }
+  .table-wrap { max-height:420px; overflow:auto; border:1px solid #e3e8ee; border-radius:6px; }
+  select { padding:7px; border-radius:6px; border:1px solid #c8d4e2; }
+  tr.failed-row { background:#fdf3f2; }
+  code { background:#eef2f7; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>门诊处方数据报送台</h1>
+  <p>导入处方明细 → 分批报送监管接口 → 异常逐行回写 → 仅失败行可重送（成功行锁定，防重复报送）</p>
+</header>
+<main>
+
+  <div class="card">
+    <h2>① 导入处方明细（CSV：处方号,患者编号,药品,数量,费用）</h2>
+    <textarea id="csv" placeholder="处方号,患者编号,药品,数量,费用
+RX20260926001,P10001,阿莫西林胶囊,2,36.50"></textarea>
+    <div class="toolbar" style="margin-top:8px">
+      <button onclick="doImport()">导入</button>
+      <button class="ghost" onclick="loadSample()">填入示例数据</button>
+      <span id="importMsg" class="msg"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>② 明细行与报送</h2>
+    <div class="stats">
+      <div class="stat" style="background:#8a94a6"><b id="sP">0</b>待报送</div>
+      <div class="stat" style="background:#d68910"><b id="sS">0</b>报送中</div>
+      <div class="stat" style="background:#1e8449"><b id="sOk">0</b>已受理</div>
+      <div class="stat" style="background:#b03a2e"><b id="sF">0</b>失败待重送</div>
+    </div>
+    <div class="toolbar">
+      <button onclick="submitPending()">提交全部待报送行</button>
+      <button class="danger" onclick="submitFailed()">重送全部失败行</button>
+      <button class="ghost" onclick="submitSelected()">报送勾选的行</button>
+      <select id="filter" onchange="refresh()">
+        <option value="ALL">全部状态</option>
+        <option value="PENDING">待报送</option>
+        <option value="SUCCESS">已受理</option>
+        <option value="FAILED">失败</option>
+      </select>
+      <button class="ghost" onclick="refresh()">刷新</button>
+      <span id="submitMsg" class="msg"></span>
+    </div>
+    <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th><input type="checkbox" onchange="toggleAll(this)"></th>
+        <th>ID</th><th>处方号</th><th>患者编号</th><th>药品</th>
+        <th>数量</th><th>费用</th><th>状态</th><th>监管回写</th>
+        <th>批次号</th><th>次数</th>
+      </tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    </div>
+    <p class="msg" style="color:#667">说明：状态为「已受理 / 报送中」的行复选框被禁用，服务端同样拒绝其再次入批，监管侧按幂等键去重，三重保护防止整批重传造成重复。</p>
+  </div>
+
+  <div class="card">
+    <h2>③ 批次记录</h2>
+    <div class="table-wrap" style="max-height:220px">
+    <table>
+      <thead><tr><th>批次号</th><th>行数</th><th>成功</th><th>失败</th><th>被拒绝</th><th>时间</th></tr></thead>
+      <tbody id="btbody"></tbody>
+    </table>
+    </div>
+  </div>
+
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const api = async (url, opts) => (await fetch(url, opts)).json();
+const post = (url, body) => api(url, {
+  method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+
+function loadSample(){
+  $('csv').value =
+`处方号,患者编号,药品,数量,费用
+RX20260926001,P10001,阿莫西林胶囊,2,36.50
+RX20260926001,P10001,布洛芬缓释片,1,18.00
+RX20260926002,P10002,胰岛素注射液(冷链),1,65.00
+RX20260926003,P10003,氯雷他定片,0,12.00
+RX20260926004,P10004,维生素C片,3,-9.90
+RX20260926005,P10005,头孢克肟分散片,2,45.60
+RX20260926006,,奥美拉唑肠溶胶囊,1,28.00
+RX20260926007,P10007,人血白蛋白(冷链),1,458.00`;
+}
+
+async function doImport(){
+  const res = await post('/api/import', {csv: $('csv').value});
+  const el = $('importMsg');
+  if (res.error){ el.className='msg bad'; el.textContent = res.error; return; }
+  el.className='msg ok';
+  el.textContent = `新增 ${res.inserted} 行，重复忽略 ${res.duplicated} 行` +
+    (res.invalid.length ? `；${res.invalid.length} 行无效` : '');
+  if (res.invalid.length) alert('无效行：\n' + res.invalid.join('\n'));
+  refresh();
+}
+
+async function refresh(){
+  const st = await api('/api/stats');
+  sP.textContent=st.PENDING; sS.textContent=st.SUBMITTING;
+  sOk.textContent=st.SUCCESS; sF.textContent=st.FAILED;
+
+  const {rows} = await api('/api/lines?status=' + $('filter').value);
+  tbody.innerHTML = rows.map(r=>{
+    const locked = (r.status==='SUCCESS' || r.status==='SUBMITTING');
+    const note = r.status==='FAILED'
+      ? `<span class="err">${r.last_error||''}</span>`
+      : `<span class="ok-note">${r.last_error||''}</span>`;
+    return `<tr class="${r.status==='FAILED'?'failed-row':''}">
+      <td><input type="checkbox" class="pick" value="${r.id}" ${locked?'disabled':''}></td>
+      <td>${r.id}</td><td>${r.rx_no}</td><td>${r.patient_id||'—'}</td>
+      <td>${r.drug}</td><td>${r.quantity}</td><td>${r.fee.toFixed(2)}</td>
+      <td><span class="badge ${r.status}">${label(r.status)}</span></td>
+      <td>${note}</td>
+      <td>${r.batch_no?'<code>'+r.batch_no+'</code>':''}</td>
+      <td>${r.attempts}</td></tr>`;
+  }).join('');
+
+  const {batches} = await api('/api/batches');
+  btbody.innerHTML = batches.map(b=>`<tr>
+    <td><code>${b.batch_no}</code></td><td>${b.total}</td>
+    <td style="color:#1e8449">${b.success_count}</td>
+    <td style="color:#b03a2e">${b.fail_count}</td>
+    <td>${b.skipped_count}</td><td>${b.created_at}</td></tr>`).join('');
+}
+
+const label = s => ({PENDING:'待报送',SUBMITTING:'报送中',SUCCESS:'已受理',FAILED:'失败'})[s]||s;
+
+function toggleAll(cb){
+  document.querySelectorAll('.pick:not(:disabled)').forEach(c=>c.checked=cb.checked);
+}
+
+async function runSubmit(ids, emptyTip){
+  const el = $('submitMsg');
+  if (!ids.length){ el.className='msg bad'; el.textContent=emptyTip; return; }
+  el.className='msg'; el.textContent='报送中…';
+  const res = await post('/api/batches', {line_ids: ids});
+  if (res.error && !res.total){
+    el.className='msg bad';
+    el.textContent = res.error + (res.skipped?.length ? `（被拒绝 ${res.skipped.length} 行）` : '');
+  } else {
+    el.className = res.failed ? 'msg bad' : 'msg ok';
+    el.textContent = `批次 ${res.batch_no}：成功 ${res.success}，失败 ${res.failed}` +
+      (res.skipped.length ? `，${res.skipped.length} 行被拒绝（已受理/报送中，防重复）` : '');
+  }
+  refresh();
+}
+
+async function submitPending(){
+  const {rows} = await api('/api/lines?status=PENDING');
+  runSubmit(rows.map(r=>r.id), '没有待报送行');
+}
+async function submitFailed(){
+  const {rows} = await api('/api/lines?status=FAILED');
+  runSubmit(rows.map(r=>r.id), '没有失败行需要重送');
+}
+function submitSelected(){
+  const ids = [...document.querySelectorAll('.pick:checked')].map(c=>+c.value);
+  runSubmit(ids, '请先勾选要报送的行（已受理行不可勾选）');
+}
+
+refresh();
+</script>
+</body>
+</html>
